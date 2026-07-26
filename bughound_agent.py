@@ -86,7 +86,10 @@ class BugHoundAgent:
         issues = self._parse_json_array_of_issues(raw)
 
         if issues is None:
-            self._log("ANALYZE", "LLM output was not parseable JSON. Falling back to heuristics.")
+            self._log(
+                "ANALYZE",
+                "LLM output was not usable (invalid JSON or missing required fields). Falling back to heuristics.",
+            )
             return self._heuristic_analyze(code_snippet)
 
         return issues
@@ -177,28 +180,50 @@ class BugHoundAgent:
         text = text.strip()
         parsed = self._try_json_loads(text)
         if isinstance(parsed, list):
-            return self._normalize_issues(parsed)
+            return self._finalize_issues(parsed)
 
         array_str = self._extract_first_json_array(text)
         if array_str:
             parsed2 = self._try_json_loads(array_str)
             if isinstance(parsed2, list):
-                return self._normalize_issues(parsed2)
+                return self._finalize_issues(parsed2)
 
         return None
 
+    def _finalize_issues(self, arr: List[Any]) -> Optional[List[Dict[str, str]]]:
+        issues = self._normalize_issues(arr)
+        if not issues and arr:
+            # The model returned a JSON array, but none of its entries had
+            # usable content (missing/empty type, severity, or msg). Treat
+            # this the same as an unparseable response rather than silently
+            # reporting "no issues found".
+            return None
+        return issues
+
     def _normalize_issues(self, arr: List[Any]) -> List[Dict[str, str]]:
         issues: List[Dict[str, str]] = []
+        dropped = 0
         for item in arr:
             if not isinstance(item, dict):
+                dropped += 1
                 continue
-            issues.append(
-                {
-                    "type": str(item.get("type", "Issue")),
-                    "severity": str(item.get("severity", "Unknown")),
-                    "msg": str(item.get("msg", "")).strip(),
-                }
+
+            issue_type = str(item.get("type", "")).strip()
+            severity = str(item.get("severity", "")).strip()
+            msg = str(item.get("msg", "")).strip()
+
+            if not issue_type or not severity or not msg:
+                dropped += 1
+                continue
+
+            issues.append({"type": issue_type, "severity": severity, "msg": msg})
+
+        if dropped:
+            self._log(
+                "ANALYZE",
+                f"Discarded {dropped} malformed issue(s) from LLM output (missing type/severity/msg).",
             )
+
         return issues
 
     def _try_json_loads(self, s: str) -> Any:
