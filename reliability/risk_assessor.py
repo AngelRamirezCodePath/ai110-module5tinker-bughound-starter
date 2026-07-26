@@ -57,7 +57,8 @@ def assess_risk(
         score -= 30
         reasons.append("Return statements may have been removed.")
 
-    if "except:" in original_code and "except:" not in fixed_code:
+    except_modified = "except:" in original_code and "except:" not in fixed_code
+    if except_modified:
         # This is usually good, but still risky.
         score -= 5
         reasons.append("Bare except was modified, verify correctness.")
@@ -80,7 +81,13 @@ def assess_risk(
     # ----------------------------
     # Auto-fix policy
     # ----------------------------
-    should_autofix = level == "low"
+    # Error-handling edits are gated independent of score: issue severity is a
+    # self-reported label from an untrusted model and can under-rate how risky
+    # a change to exception handling actually is. A modified except clause
+    # always requires human review, regardless of how high the score is.
+    should_autofix = level == "low" and not except_modified
+    if except_modified and level == "low":
+        reasons.append("Auto-fix blocked: exception handling changed, requires human review.")
 
     if not reasons:
         reasons.append("No significant risks detected.")
